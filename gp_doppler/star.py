@@ -7,11 +7,12 @@ from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib import pyplot as plt
 
-from .geometry import set_earth, dot
+from .geometry import set_earth, dot, cross
 from .property_descriptors import AffectsOmegaCrit, ResetsGrid
 
 from astropy import constants as const, units as u
-from astropy.coordinates import SphericalRepresentation, UnitSphericalRepresentation
+from astropy.coordinates import (SphericalRepresentation, UnitSphericalRepresentation,
+                                 CartesianRepresentation)
 from astropy.analytic_functions import blackbody_nu
 
 
@@ -64,14 +65,18 @@ class Star:
         self.clear_grid()
 
     def clear_grid(self):
-        # now set up tile locs and directions.
+        # now set up tile locations, velocities and directions.
         # These will be (nlon, nlat) CartesianRepresentations
         self.tile_locs = None
         self.tile_dirs = None
+        self.tile_velocities = None
 
         # and arrays of tile properties - shape (nlon, nlat)
         self.tile_areas = None
         self.tile_fluxes = None
+
+        # the next array is the main one that gets tweaked
+        self.tile_scales = None
 
     """
     We define many of the attributes as properties, so we can wipe the grid when they are set,
@@ -116,11 +121,11 @@ class Star:
             radii = self.radius*np.array([newton(surface, 1.01, args=(self.omega, x)) for x in theta_values])
         else:
             radii = self.radius*np.ones_like(theta_values).value
-        print(radii.mean(), radii.std(), radii.shape)
+
         # and effective gravities
         geff = np.sqrt((-const.G*self.mass/radii**2 + self.Omega**2 * radii * np.sin(theta_values)**2)**2 +
                        self.Omega**4 * radii**2 * np.sin(theta_values)**2 * np.cos(theta_values)**2)
-        print(geff.mean(), geff.std(), geff.shape)
+
         # now make a (3, nlon, nlat) array of positions
         self.tile_locs = self.tile_locs = SphericalRepresentation(phi_values[:, np.newaxis],
                                                                   90*u.deg-theta_values,
@@ -147,17 +152,36 @@ class Star:
         tile_temperatures = tile_temperatures * np.ones_like(phi_values[:, np.newaxis]/u.deg)
 
         # fluxes, not accounting for limb darkening
+        self.tile_scales = np.ones((nlon, nlat))
         self.tile_fluxes = blackbody_nu(wavelength, tile_temperatures)
 
         # tile areas
         spher = self.tile_locs.represent_as(SphericalRepresentation)
         self.tile_areas = spher.distance**2 * np.sin(90*u.deg-spher.lat) * dtheta * dphi
 
+        omega_vec = u.Quantity([0.0, 0.0, self.Omega.value], unit=self.Omega.unit)
+        # get velocities of tiles
+        loc_xyz = self.tile_locs.xyz
+        cross_product = cross(omega_vec, loc_xyz)
+        self.tile_velocities = CartesianRepresentation(
+            u.Quantity(cross_product, unit=omega_vec.unit*loc_xyz.unit)
+        )
+
     def plot(self, savefig=False, filename='star_surface.png',
-             cmap='magma'):
+             cmap='magma', what='fluxes', cstride=1, rstride=1):
         ax = plt.axes(projection='3d')
-        norm_fluxes = self.tile_fluxes / self.tile_fluxes.max()
-        colors = getattr(cm, cmap)(norm_fluxes.value)
+        if what == 'fluxes':
+            vals = self.tile_fluxes * self.tile_scales
+            vals = vals / vals.max()
+        elif what == 'vels':
+            earth = set_earth(90, 0.0)
+            velocities = self.tile_velocities.xyz
+            vals = dot(earth, velocities).to(u.km/u.s)
+            vals = np.fabs(vals/vals.max())
+        elif what == 'areas':
+            vals = self.tile_areas / self.tile_areas.max()
+
+        colors = getattr(cm, cmap)(vals.value)
         x, y, z = self.tile_locs.xyz.to(const.R_jup)
         ax.plot_surface(x.value, y.value, z.value, cstride=1, rstride=1, facecolors=colors,
                         shade=False)
@@ -175,13 +199,38 @@ class Star:
         xyz = self.tile_dirs.xyz
         earth = set_earth(inclination.to(u.deg).value, phase)
 
-        mu = dot(earth, xyz)
+        mu = dot(earth, xyz) / np.sqrt(np.sum(xyz*xyz, axis=0))
         # mask of visible elements
         mask = mu > -0.01
         return np.sum(
-            self.tile_fluxes[mask] *
+            self.tile_fluxes[mask] * self.tile_scales[mask] *
             (1.0 - self.ulimb + np.fabs(mu[mask])*self.ulimb) *
             self.tile_areas[mask] * mu[mask]
         )
 
+    @u.quantity_input(inclination=u.deg)
+    def calc_line_profile(self, phase, inclination):
 
+        # TODO: FIX THIS!
+
+        # project velocities to get L.O.S
+        earth = set_earth(inclination.to(u.deg).value, phase)
+        velocities = self.tile_velocities.xyz
+        vproj = dot(earth, velocities).to(u.km/u.s)
+
+        # visible?
+        xyz = self.tile_dirs.xyz
+        vis = dot(earth, xyz) / np.sqrt(np.sum(xyz*xyz, axis=0))
+        vis_mask = vis > -0.01
+
+        nbins = 30
+        bins = np.linspace(-vproj.max(), vproj.max(), nbins)
+        indices = np.digitize(vproj, bins)
+        fluxes = np.zeros(nbins)
+        for i in range(nbins):
+            mask = (indices == i) & vis_mask
+            fluxes[i] += np.sum(
+                self.tile_fluxes[mask] * self.tile_scales[mask] *
+                (1.0 - self.ulimb + np.fabs(vis_mask[mask])*self.ulimb) *
+                self.tile_areas[mask] * vis_mask[mask]).value
+        return bins, fluxes

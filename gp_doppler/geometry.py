@@ -55,3 +55,27 @@ def dot(vec, vec_array):
 
     # restore the correct shape
     return dot_product.reshape(vec_array.shape[1:])
+
+
+def cross(vec, vec_array):
+    """
+    Compute cross product of vector with an array of vectors.
+
+    We assume that the vector array has the vectors residing in the
+    first dimension - i.e it is of shape (3, ...)
+
+    Parameters
+    ----------
+    vec : `numpy.ndarray`
+        vector
+    vec_array : `numpy.ndarray`
+        array of vectors of shape (3, ...)
+
+    Returns
+    -------
+    cross_product : `numpy.ndarray`
+        array of cross products. If vec_array has shape (3, N, M), the returned
+        cross_product array has shape (3, N, M).
+    """
+    # take the cross product
+    return np.cross(vec, vec_array, axisb=0, axisc=0)
