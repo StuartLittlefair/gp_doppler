@@ -1,6 +1,6 @@
 from __future__ import (print_function, absolute_import)
 
-import numpy as np
+import autograd.numpy as np
 from scipy.optimize import newton
 
 from matplotlib import cm
@@ -14,6 +14,7 @@ from astropy import constants as const, units as u
 from astropy.coordinates import (SphericalRepresentation, UnitSphericalRepresentation,
                                  CartesianRepresentation)
 from astropy.analytic_functions import blackbody_nu
+from astropy.convolution import convolve, Gaussian1DKernel
 
 
 def surface(x, omega, theta):
@@ -167,17 +168,20 @@ class Star:
             u.Quantity(cross_product, unit=omega_vec.unit*loc_xyz.unit)
         )
 
-    def plot(self, savefig=False, filename='star_surface.png',
+    @u.quantity_input(inclination=u.deg)
+    def plot(self, inclination=80*u.deg, phase=0.0, savefig=False, filename='star_surface.png',
              cmap='magma', what='fluxes', cstride=1, rstride=1):
         ax = plt.axes(projection='3d')
+        ax.view_init(90-inclination.to(u.deg).value, 360*phase)
         if what == 'fluxes':
             vals = self.tile_fluxes * self.tile_scales
             vals = vals / vals.max()
         elif what == 'vels':
-            earth = set_earth(90, 0.0)
+            earth = set_earth(inclination.to(u.deg).value, phase)
             velocities = self.tile_velocities.xyz
             vals = dot(earth, velocities).to(u.km/u.s)
-            vals = np.fabs(vals/vals.max())
+            # can't plot negative values, so rescale from 0 - 1
+            vals = (vals - vals.min())/(vals.max()-vals.min())
         elif what == 'areas':
             vals = self.tile_areas / self.tile_areas.max()
 
@@ -201,7 +205,7 @@ class Star:
 
         mu = dot(earth, xyz) / np.sqrt(np.sum(xyz*xyz, axis=0))
         # mask of visible elements
-        mask = mu > -0.01
+        mask = mu >= 0.0
         return np.sum(
             self.tile_fluxes[mask] * self.tile_scales[mask] *
             (1.0 - self.ulimb + np.fabs(mu[mask])*self.ulimb) *
@@ -209,7 +213,13 @@ class Star:
         )
 
     @u.quantity_input(inclination=u.deg)
-    def calc_line_profile(self, phase, inclination):
+    @u.quantity_input(v_macro=u.km/u.s)
+    @u.quantity_input(v_inst=u.km/u.s)
+    @u.quantity_input(v_min=u.km/u.s)
+    @u.quantity_input(v_max=u.km/u.s)
+    def calc_line_profile(self, phase, inclination, nbins=100,
+                          v_macro=2*u.km/u.s, v_inst=4*u.km/u.s,
+                          v_min=-40*u.km/u.s, v_max=40*u.km/u.s):
 
         # TODO: FIX THIS!
 
@@ -220,17 +230,24 @@ class Star:
 
         # visible?
         xyz = self.tile_dirs.xyz
-        vis = dot(earth, xyz) / np.sqrt(np.sum(xyz*xyz, axis=0))
-        vis_mask = vis > -0.01
+        # projection factor for tiles, mu = cos(theta)
+        mu = dot(earth, xyz) / np.sqrt(np.sum(xyz*xyz, axis=0))
+        vis_mask = mu >= 0.0
 
-        nbins = 30
-        bins = np.linspace(-vproj.max(), vproj.max(), nbins)
+        bins = np.linspace(v_min, v_max, nbins)
         indices = np.digitize(vproj, bins)
         fluxes = np.zeros(nbins)
         for i in range(nbins):
             mask = (indices == i) & vis_mask
+            # fluxes, including limb darkening
             fluxes[i] += np.sum(
                 self.tile_fluxes[mask] * self.tile_scales[mask] *
-                (1.0 - self.ulimb + np.fabs(vis_mask[mask])*self.ulimb) *
-                self.tile_areas[mask] * vis_mask[mask]).value
+                (1.0 - self.ulimb + np.fabs(mu[mask])*self.ulimb) *
+                self.tile_areas[mask] * mu[mask]).value
+
+        # convolve with instrumental and local line profiles
+        bin_width = (v_max-v_min)/(nbins-1)
+        profile_width_in_bins = np.sqrt(v_macro**2 + v_inst**2) / bin_width
+        gauss_kernel = Gaussian1DKernel(stddev=profile_width_in_bins, mode='linear_interp')
+        fluxes = convolve(fluxes, gauss_kernel, boundary='extend')
         return bins, fluxes
