@@ -1,6 +1,6 @@
 from __future__ import (print_function, absolute_import)
 
-import numpy as np
+import autograd.numpy as np
 
 
 def set_earth(inclination, phase):

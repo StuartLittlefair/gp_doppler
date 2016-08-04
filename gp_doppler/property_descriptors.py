@@ -1,6 +1,6 @@
 from __future__ import (print_function, absolute_import)
 
-import numpy as np
+import autograd.numpy as np
 import warnings
 from astropy import constants as const
 
