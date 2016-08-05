@@ -221,8 +221,6 @@ class Star:
                           v_macro=2*u.km/u.s, v_inst=4*u.km/u.s,
                           v_min=-40*u.km/u.s, v_max=40*u.km/u.s):
 
-        # TODO: FIX THIS!
-
         # project velocities to get L.O.S
         earth = set_earth(inclination.to(u.deg).value, phase)
         velocities = self.tile_velocities.xyz
