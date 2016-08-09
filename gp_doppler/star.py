@@ -128,9 +128,9 @@ class Star:
                        self.Omega**4 * radii**2 * np.sin(theta_values)**2 * np.cos(theta_values)**2)
 
         # now make a (3, nlon, nlat) array of positions
-        self.tile_locs = self.tile_locs = SphericalRepresentation(phi_values[:, np.newaxis],
-                                                                  90*u.deg-theta_values,
-                                                                  radii).to_cartesian()
+        self.tile_locs = SphericalRepresentation(phi_values[:, np.newaxis],
+                                                 90*u.deg-theta_values,
+                                                 radii).to_cartesian()
 
         # normal to tile is the direction of the derivate of the potential
         # this is the vector form of geff above
