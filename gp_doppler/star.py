@@ -187,7 +187,7 @@ class Star:
 
         colors = getattr(cm, cmap)(vals.value)
         x, y, z = self.tile_locs.xyz.to(const.R_jup)
-        ax.plot_surface(x.value, y.value, z.value, cstride=1, rstride=1, facecolors=colors,
+        ax.plot_surface(x.value, y.value, z.value, cstride=cstride, rstride=rstride, facecolors=colors,
                         shade=shade)
         if savefig:
             plt.savefig(filename)
