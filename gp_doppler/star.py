@@ -170,7 +170,7 @@ class Star:
 
     @u.quantity_input(inclination=u.deg)
     def plot(self, inclination=80*u.deg, phase=0.0, savefig=False, filename='star_surface.png',
-             cmap='magma', what='fluxes', cstride=1, rstride=1):
+             cmap='magma', what='fluxes', cstride=1, rstride=1, shade=False):
         ax = plt.axes(projection='3d')
         ax.view_init(90-inclination.to(u.deg).value, 360*phase)
         if what == 'fluxes':
@@ -188,7 +188,7 @@ class Star:
         colors = getattr(cm, cmap)(vals.value)
         x, y, z = self.tile_locs.xyz.to(const.R_jup)
         ax.plot_surface(x.value, y.value, z.value, cstride=1, rstride=1, facecolors=colors,
-                        shade=False)
+                        shade=shade)
         if savefig:
             plt.savefig(filename)
         else:
