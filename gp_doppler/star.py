@@ -16,6 +16,8 @@ from astropy.coordinates import (SphericalRepresentation, UnitSphericalRepresent
 from astropy.analytic_functions import blackbody_nu
 from astropy.convolution import convolve, Gaussian1DKernel
 
+import healpy as hp
+
 
 def surface(x, omega, theta):
     """
@@ -47,7 +49,6 @@ class Star:
     mass = AffectsOmegaCrit('mass', u.kg)
     radius = AffectsOmegaCrit('radius', u.m)
     beta = ResetsGrid('beta')
-    ntiles = ResetsGrid('ntiles')
     distortion = ResetsGrid('distortion')
 
     @u.quantity_input(mass=u.kg)
@@ -103,17 +104,39 @@ class Star:
         self.Omega = Omega
         self.clear_grid()
 
+    """
+    ntiles is also a property, since we need to remap to an appropriate
+    value for HEALPIX.
+    """
+    @property
+    def ntiles(self):
+        """
+        Number of tiles.
+
+        Is checked to see if appropriate for HEALPIX algorithm.
+        """
+        return self._ntiles
+
+    @ntiles.setter
+    def ntiles(self, value):
+        allowed_values = [48, 192, 768, 3072, 12288, 49152, 196608]
+        if int(value) not in allowed_values:
+            raise ValueError('{} not one of allowed values: {!r}'.format(
+                value, allowed_values
+            ))
+        self._ntiles = int(12*np.floor(np.sqrt(value/12.))**2)
+        self.clear_grid()
+
     @u.quantity_input(wavelength=u.nm)
     def setup_grid(self, wavelength=656*u.nm):
-        # how many meridians do we need?
-        nlat = int(np.sqrt(self.ntiles))
-        nlon = nlat
+        # use HEALPIX to get evenly sized tiles
+        NSIDE = hp.npix2nside(self.ntiles)
+
+        colat, lon = hp.pix2ang(NSIDE, np.arange(0, self.ntiles))
         # co-latitude
-        theta_values = np.linspace(0, 180, nlat) * u.degree
-        dtheta = 180*u.deg/(nlat-1)
+        theta_values = u.Quantity(colat, unit=u.rad)
         # longitude
-        phi_values = np.linspace(0.0, 2*np.pi, nlon)*u.rad
-        dphi = 360*u.deg/(nlon-1)
+        phi_values = u.Quantity(lon, unit=u.rad)
 
         # the following formulae use the Roche approximation and assume
         # solid body rotation
@@ -121,14 +144,14 @@ class Star:
         if self.distortion:
             radii = self.radius*np.array([newton(surface, 1.01, args=(self.omega, x)) for x in theta_values])
         else:
-            radii = self.radius*np.ones_like(theta_values).value
+            radii = self.radius*np.ones(self.ntiles)
 
         # and effective gravities
         geff = np.sqrt((-const.G*self.mass/radii**2 + self.Omega**2 * radii * np.sin(theta_values)**2)**2 +
                        self.Omega**4 * radii**2 * np.sin(theta_values)**2 * np.cos(theta_values)**2)
 
-        # now make a (3, nlon, nlat) array of positions
-        self.tile_locs = SphericalRepresentation(phi_values[:, np.newaxis],
+        # now make a ntiles sized CartesianRepresentation of positions
+        self.tile_locs = SphericalRepresentation(phi_values,
                                                  90*u.deg-theta_values,
                                                  radii).to_cartesian()
 
@@ -136,7 +159,6 @@ class Star:
         # this is the vector form of geff above
         # the easiest way to express it is that it differs from (r, theta, phi)
         # by a small amount in the theta direction epsilon
-        # also (3, nlon, nlat)
         x = radii/self.radius
         a = 1./x**2 - (8./27.)*self.omega**2 * x * np.sin(theta_values)**2
         b = np.sqrt(
@@ -144,21 +166,20 @@ class Star:
                 ((8./27)*self.omega**2 * x * np.sin(theta_values) * np.cos(theta_values))**2
             )
         epsilon = np.arccos(a/b)
-        self.tile_dirs = UnitSphericalRepresentation(phi_values[:, np.newaxis],
+        self.tile_dirs = UnitSphericalRepresentation(phi_values,
                                                      90*u.deg - theta_values - epsilon)
         self.tile_dirs = self.tile_dirs.to_cartesian()
 
-        # and (nlon, nlat) arrays of tile properties
+        # and ntiles sized arrays of tile properties
         tile_temperatures = 2000.0 * u.K * (geff / geff.max())**self.beta
-        tile_temperatures = tile_temperatures * np.ones_like(phi_values[:, np.newaxis]/u.deg)
 
         # fluxes, not accounting for limb darkening
-        self.tile_scales = np.ones((nlon, nlat))
+        self.tile_scales = np.ones(self.ntiles)
         self.tile_fluxes = blackbody_nu(wavelength, tile_temperatures)
 
         # tile areas
         spher = self.tile_locs.represent_as(SphericalRepresentation)
-        self.tile_areas = spher.distance**2 * np.sin(90*u.deg-spher.lat) * dtheta * dphi
+        self.tile_areas = spher.distance**2 * hp.nside2pixarea(NSIDE) * u.rad * u.rad
 
         omega_vec = u.Quantity([0.0, 0.0, self.Omega.value], unit=self.Omega.unit)
         # get velocities of tiles
@@ -169,10 +190,12 @@ class Star:
         )
 
     @u.quantity_input(inclination=u.deg)
-    def plot(self, inclination=80*u.deg, phase=0.0, savefig=False, filename='star_surface.png',
+    def plot(self, inclination=90*u.deg, phase=0.0, savefig=False, filename='star_surface.png',
              cmap='magma', what='fluxes', cstride=1, rstride=1, shade=False):
         ax = plt.axes(projection='3d')
         ax.view_init(90-inclination.to(u.deg).value, 360*phase)
+
+        # get map values
         if what == 'fluxes':
             vals = self.tile_fluxes * self.tile_scales
             vals = vals / vals.max()
@@ -184,15 +207,50 @@ class Star:
             vals = (vals - vals.min())/(vals.max()-vals.min())
         elif what == 'areas':
             vals = self.tile_areas / self.tile_areas.max()
-
         colors = getattr(cm, cmap)(vals.value)
-        x, y, z = self.tile_locs.xyz.to(const.R_jup)
-        ax.plot_surface(x.value, y.value, z.value, cstride=cstride, rstride=rstride, facecolors=colors,
+
+        # project the map to a rectangular matrix
+        nlat = nlon = int(np.floor(np.sqrt(self.ntiles)))
+        theta = np.linspace(np.pi, 0, nlat)
+        phi = np.linspace(-np.pi, np.pi, nlon)
+        PHI, THETA = np.meshgrid(phi, theta)
+        NSIDE = hp.npix2nside(self.ntiles)
+        grid_pix = hp.ang2pix(NSIDE, THETA, PHI)
+        grid_map = colors[grid_pix]
+
+        # Create a sphere
+        r = 0.3
+        x = r*np.sin(THETA)*np.cos(PHI)
+        y = r*np.sin(THETA)*np.sin(PHI)
+        z = r*np.cos(THETA)
+
+        ax.plot_surface(x, y, z, cstride=cstride, rstride=rstride, facecolors=grid_map,
                         shade=shade)
         if savefig:
             plt.savefig(filename)
         else:
             plt.show()
+
+    @u.quantity_input(inclination=u.deg)
+    def view(self, inclination=90*u.deg, phase=0.0, what='fluxes',
+             projection='mollweide', cmap='magma',
+             dlat=30, dlon=30, **kwargs):
+        rot = (360*phase, 90-inclination.to(u.deg).value, 0)
+        if what == 'fluxes':
+            vals = self.tile_fluxes * self.tile_scales
+            vals = vals / vals.max()
+        elif what == 'areas':
+            vals = self.tile_areas / self.tile_areas.max()
+
+        if 'mollweide'.find(projection) == 0:
+            hp.mollview(vals, rot=rot, cmap=cmap, **kwargs)
+        elif 'cartesian'.find(projection) == 0:
+            hp.cartview(vals, rot=rot, cmap=cmap, **kwargs)
+        elif 'orthographic'.find(projection) == 0:
+            hp.orthview(vals, rot=rot, cmap=cmap, **kwargs)
+        else:
+            raise ValueError('Unrecognised projection')
+        hp.graticule(dlat, dlon)
 
     @u.quantity_input(inclination=u.deg)
     def calc_luminosity(self, phase, inclination):
