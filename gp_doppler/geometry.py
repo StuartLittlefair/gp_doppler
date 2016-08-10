@@ -1,9 +1,12 @@
 from __future__ import (print_function, absolute_import)
 
 import numpy as np
+from astropy.coordinates import CartesianRepresentation
+from astropy import units as u
 
 
-def set_earth(inclination, phase):
+@u.quantity_input(inclination=u.deg)
+def set_earth(inclination, phases):
     """
     Calculate vector that points towards observer.
 
@@ -11,71 +14,117 @@ def set_earth(inclination, phase):
     ----------
     inclination : float
         inclination of star to los in degrees. 90=edge on
-    phase : float
+    phases : float or `np.ndarray`
         rotational phase of star
 
     Returns
     -------
-    earth : `numpy.ndarray`
-        vector shape (3,) pointing to Earth
+    earth : `CartesianRepresentation`
+        vector pointing to Earth
     """
-    ri = np.radians(inclination)
-    cosi, sini = np.cos(ri), np.sin(ri)
-    cosp = np.cos(2*np.pi*phase)
-    sinp = np.sin(2*np.pi*phase)
-    return np.asarray((sini*cosp, -sini*sinp, cosi))
+    cosi, sini = np.cos(inclination), np.sin(inclination)
+    cosp = np.cos(2*np.pi*phases)
+    sinp = np.sin(2*np.pi*phases)
+    return CartesianRepresentation(sini*cosp, -sini*sinp, cosi)
 
 
-def dot(vec, vec_array):
+@u.quantity_input(inclination=u.deg)
+def earth_grad(inclination, phases):
     """
-    Compute dot product of vector with an array of vectors.
-
-    We assume that the vector array has the vectors residing in the
-    first dimension - i.e it is of shape (3, ...)
+    Calculate gradient of earth vector w.r.t inclination.
 
     Parameters
     ----------
-    vec : `numpy.ndarray`
-        vector
-    vec_array : `numpy.ndarray`
-        array of vectors of shape (3, ...)
+    inclination : float
+        inclination of star to los in degrees. 90=edge on
+    phases : float or `np.ndarray`
+        rotational phase of star
 
     Returns
     -------
-    dot_product : `numpy.ndarray`
-        array of dot products. If vec_array has shape (3, N, M), the returned
-        dot_product array has shape (N, M).
+    earth : `CartesianRepresentation`
+        gradient of earth vector w.r.t inclination
+    """
+    cosi, sini = np.cos(inclination), np.sin(inclination)
+    cosp = np.cos(2*np.pi*phases)
+    sinp = np.sin(2*np.pi*phases)
+    return CartesianRepresentation(cosi*cosp, -cosi*sinp, -sini)
+
+
+def dot(a, b, normalise=False):
+    """
+    Dot product of two CartesianRepresentations.
+
+    Parameters
+    ----------
+    a : `CartesianRepresentation`
+        First CartesianRepresentation, e.g directions to earth
+    b : `CartesianRepresentation`
+        Second CartesianRepresentation, e.g directions of tiles
+    normalise : bool
+        if True, normalise so dot product is cos(theta), where
+        theta is angle between a and b
+
+    Returns
+    -------
+    dot_product : `u.Quantity`
+        array of dot products. If `a` has shape (N, M) and `b` has shape (K,L)
+        returned Quantity has shape (N, M, K, L)
     """
     # since the data can be n-dimensional, reshape
     # to a 2-d (3, N) array
-    xyz = vec_array.reshape((3, vec_array.size // 3))
+    xyz_a, xyz_b = a.xyz, b.xyz
+    orig_shape_a = xyz_a.shape
+    orig_shape_b = xyz_b.shape
+    xyz_a = xyz_a.reshape((3, xyz_a.size // 3))
+    xyz_b = xyz_b.reshape((3, xyz_b.size // 3))
 
-    # take the dot product
-    dot_product = np.dot(vec, xyz)
+    # take the dot product, broadcast over both axes so we
+    # get a result of shape (xyz_a.size, xyz_b.size)
+    dot_product = np.dot(xyz_a.T, xyz_b)
+
+    # normalise if requested
+    if normalise:
+        length_a = np.sqrt(np.sum(xyz_a*xyz_a, axis=0))
+        length_b = np.sqrt(np.sum(xyz_b*xyz_b, axis=0))
+        length = length_a[:, np.newaxis]*length_b
+        dot_product /= length
 
     # restore the correct shape
-    return dot_product.reshape(vec_array.shape[1:])
+    # should be, e.g (Na, Ma, Nb, Mb)
+    return dot_product.reshape(orig_shape_a[1:] + orig_shape_b[1:])
 
 
-def cross(vec, vec_array):
+def cross(a, b):
     """
-    Compute cross product of vector with an array of vectors.
-
-    We assume that the vector array has the vectors residing in the
-    first dimension - i.e it is of shape (3, ...)
+    Compute cross product of two CartesianRepresentations.
 
     Parameters
     ----------
-    vec : `numpy.ndarray`
-        vector
-    vec_array : `numpy.ndarray`
-        array of vectors of shape (3, ...)
+    a : `CartesianRepresentation`
+        First CartesianRepresentation, e.g directions to earth
+    b : `CartesianRepresentation`
+        Second CartesianRepresentation, e.g directions of tiles
 
     Returns
     -------
-    cross_product : `numpy.ndarray`
-        array of cross products. If vec_array has shape (3, N, M), the returned
-        cross_product array has shape (3, N, M).
+    cross_product : `CartesianRepresentation`
+        array of cross products. If `a` has shape (N, M) and `b` has shape (K,L)
+        returned Quantity has shape (N, M, K, L)
     """
+    # since the data can be n-dimensional, reshape
+    # to a 2-d (3, N) array
+    xyz_a, xyz_b = a.xyz, b.xyz
+    orig_shape_a = xyz_a.shape
+    orig_shape_b = xyz_b.shape
+    xyz_a = xyz_a.reshape((3, xyz_a.size // 3))
+    xyz_b = xyz_b.reshape((3, xyz_b.size // 3))
+
     # take the cross product
-    return np.cross(vec, vec_array, axisb=0, axisc=0)
+    cross_product = np.cross(xyz_a[:, :, np.newaxis], xyz_b,
+                             axisa=0, axisb=0, axisc=0)
+    cross_product_unit = xyz_a.unit * xyz_b.unit
+    cross_product = u.Quantity(cross_product, unit=cross_product_unit)
+
+    cartrep = CartesianRepresentation(cross_product)
+    return cartrep.reshape(orig_shape_a[1:] + orig_shape_b[1:])

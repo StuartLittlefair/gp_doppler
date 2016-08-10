@@ -7,7 +7,7 @@ from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib import pyplot as plt
 
-from .geometry import set_earth, dot, cross
+from .geometry import set_earth, dot, cross, earth_grad
 from .property_descriptors import AffectsOmegaCrit, ResetsGrid
 
 from astropy import constants as const, units as u
@@ -181,13 +181,12 @@ class Star:
         spher = self.tile_locs.represent_as(SphericalRepresentation)
         self.tile_areas = spher.distance**2 * hp.nside2pixarea(NSIDE) * u.rad * u.rad
 
-        omega_vec = u.Quantity([0.0, 0.0, self.Omega.value], unit=self.Omega.unit)
-        # get velocities of tiles
-        loc_xyz = self.tile_locs.xyz
-        cross_product = cross(omega_vec, loc_xyz)
-        self.tile_velocities = CartesianRepresentation(
-            u.Quantity(cross_product, unit=omega_vec.unit*loc_xyz.unit)
+        omega_vec = CartesianRepresentation(
+            u.Quantity([0.0, 0.0, self.Omega.value],
+                       unit=self.Omega.unit)
         )
+        # get velocities of tiles
+        self.tile_velocities = cross(omega_vec, self.tile_locs)
 
     @u.quantity_input(inclination=u.deg)
     def plot(self, inclination=90*u.deg, phase=0.0, savefig=False, filename='star_surface.png',
@@ -262,18 +261,28 @@ class Star:
         if self.tile_locs is None:
             self.setup_grid()
 
-        # get xyz of tile directions now since it's expensice
-        xyz = self.tile_dirs.xyz
-        earth = set_earth(inclination.to(u.deg).value, phase)
+        # get CartesianRepresentation pointing to earth at these phases
+        earth = set_earth(inclination, phase)
 
-        mu = dot(earth, xyz) / np.sqrt(np.sum(xyz*xyz, axis=0))
+        mu = dot(earth, self.tile_dirs, normalise=True)
         # mask of visible elements
         mask = mu >= 0.0
-        return np.sum(
-            self.tile_fluxes[mask] * self.tile_scales[mask] *
-            (1.0 - self.ulimb + np.fabs(mu[mask])*self.ulimb) *
-            self.tile_areas[mask] * mu[mask]
-        )
+
+        # broadcast and calculate
+        phase = np.asarray(phase)
+        new_shape = phase.shape + self.tile_fluxes.shape
+        assert(new_shape == mu.shape), "Broadcasting has gone wrong"
+
+        fluxes = np.tile(self.tile_fluxes, phase.size).reshape(new_shape)
+        scales = np.tile(self.tile_scales, phase.size).reshape(new_shape)
+        areas = np.tile(self.tile_areas, phase.size).reshape(new_shape)
+
+        # limb darkened sum of all tile fluxes
+        lum = (fluxes * scales * (1.0 - self.ulimb + np.fabs(mu)*self.ulimb) *
+               areas * mu)
+        # no contribution from invisible tiles
+        lum[mask] = 0.0
+        return np.sum(lum, axis=1)
 
     @u.quantity_input(inclination=u.deg)
     @u.quantity_input(v_macro=u.km/u.s)
