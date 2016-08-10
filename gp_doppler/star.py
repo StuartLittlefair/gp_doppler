@@ -55,7 +55,7 @@ class Star:
     @u.quantity_input(radius=u.m)
     @u.quantity_input(period=u.s)
     def __init__(self, mass, radius, period, beta=0.08, ulimb=0.9,
-                 ntiles=400, distortion=True):
+                 ntiles=3072, distortion=True):
         self.distortion = distortion
         self.mass = mass
         self.radius = radius  # will also set self.omega_crit
@@ -234,6 +234,7 @@ class Star:
     @u.quantity_input(inclination=u.deg)
     def view(self, inclination=90*u.deg, phase=0.0, what='fluxes',
              projection='mollweide', cmap='magma',
+             savefig=False, filename='star_surface.png',
              dlat=30, dlon=30, **kwargs):
         rot = (360*phase, 90-inclination.to(u.deg).value, 0)
         if what == 'fluxes':
@@ -251,6 +252,10 @@ class Star:
         else:
             raise ValueError('Unrecognised projection')
         hp.graticule(dlat, dlon)
+        if savefig:
+            plt.savefig(filename)
+        else:
+            plt.show()
 
     @u.quantity_input(inclination=u.deg)
     def calc_luminosity(self, phase, inclination):
