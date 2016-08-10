@@ -82,6 +82,8 @@ def dot(a, b, normalise=False):
     # take the dot product, broadcast over both axes so we
     # get a result of shape (xyz_a.size, xyz_b.size)
     dot_product = np.dot(xyz_a.T, xyz_b)
+    dot_product_unit = xyz_a.unit * xyz_b.unit
+    dot_product = u.Quantity(dot_product.value, unit=dot_product_unit)
 
     # normalise if requested
     if normalise:

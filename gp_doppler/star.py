@@ -257,7 +257,7 @@ class Star:
             plt.show()
 
     @u.quantity_input(inclination=u.deg)
-    def calc_luminosity(self, phase, inclination):
+    def _luminosity_array(self, phase, inclination):
         if self.tile_locs is None:
             self.setup_grid()
 
@@ -282,6 +282,11 @@ class Star:
                areas * mu)
         # no contribution from invisible tiles
         lum[mask] = 0.0
+        return lum
+
+    @u.quantity_input(inclination=u.deg)
+    def calc_luminosity(self, phase, inclination):
+        lum = self._luminosity_array(phase, inclination)
         return np.sum(lum, axis=1)
 
     @u.quantity_input(inclination=u.deg)
@@ -293,31 +298,31 @@ class Star:
                           v_macro=2*u.km/u.s, v_inst=4*u.km/u.s,
                           v_min=-40*u.km/u.s, v_max=40*u.km/u.s):
 
-        # project velocities to get L.O.S
-        earth = set_earth(inclination.to(u.deg).value, phase)
-        velocities = self.tile_velocities.xyz
-        vproj = dot(earth, velocities).to(u.km/u.s)
+        # get CartesianRepresentation pointing to earth at these phases
+        earth = set_earth(inclination, phase)
+        # get CartesianRepresentation of projected velocities
+        vproj = dot(earth, self.tile_velocities).to(u.km/u.s)
 
-        # visible?
-        xyz = self.tile_dirs.xyz
-        # projection factor for tiles, mu = cos(theta)
-        mu = dot(earth, xyz) / np.sqrt(np.sum(xyz*xyz, axis=0))
-        vis_mask = mu >= 0.0
-
+        # which tiles fall in which bin?
         bins = np.linspace(v_min, v_max, nbins)
         indices = np.digitize(vproj, bins)
-        fluxes = np.zeros(nbins)
+
+        lum = self._luminosity_array(phase, inclination)
+        phase = np.asarray(phase)
+        trailed_spectrum = np.zeros((phase.size, nbins))
+
         for i in range(nbins):
-            mask = (indices == i) & vis_mask
-            # fluxes, including limb darkening
-            fluxes[i] += np.sum(
-                self.tile_fluxes[mask] * self.tile_scales[mask] *
-                (1.0 - self.ulimb + np.fabs(mu[mask])*self.ulimb) *
-                self.tile_areas[mask] * mu[mask]).value
+            mask = (indices == i)
+            trailed_spectrum[:, i] = np.sum(lum*mask, axis=1)
 
         # convolve with instrumental and local line profiles
+        # TODO: realistic Line Profile Treatment
+        # For now we assume every element has same intrinsic
+        # line profile
         bin_width = (v_max-v_min)/(nbins-1)
         profile_width_in_bins = np.sqrt(v_macro**2 + v_inst**2) / bin_width
         gauss_kernel = Gaussian1DKernel(stddev=profile_width_in_bins, mode='linear_interp')
-        fluxes = convolve(fluxes, gauss_kernel, boundary='extend')
-        return bins, fluxes
+        for i in range(phase.size):
+            trailed_spectrum[i, :] = convolve(trailed_spectrum[i, :], gauss_kernel, boundary='extend')
+
+        return bins, trailed_spectrum
